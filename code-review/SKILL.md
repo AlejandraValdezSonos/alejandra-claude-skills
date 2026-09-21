@@ -21,6 +21,7 @@ that catches real problems and helps them write better code.
 - **Project path**: A path to a git repository on disk (or a name if it's a known dir). Default to `.` if not specified.
 - **Branch name**: The feature branch to review.
 - **Base branch**: Default to `test`. If the user specifies a different base (e.g., `main`, `develop`), use that.
+- **PR number**: Optional. If provided (e.g. `#386`), fetch PR comments from GitHub and evaluate Jira AC coverage. If not provided, skip Phases 1d and 1e.
 
 ## Phase 1: Understand the Changes
 
@@ -55,6 +56,60 @@ git log <base_branch>..<branch> --oneline
 
 This gives you context about the developer's intent, which matters for calibrating the review.
 
+### 1d. Fetch PR comments (if PR number provided)
+
+```bash
+gh pr view <pr_number> --repo Sonos-Inc/<repo> \
+  --json comments,reviews \
+  --jq '{
+    comments: [.comments[] | {author: .author.login, body: .body}],
+    reviews: [.reviews[] | {author: .author.login, state: .state, body: .body}]
+  }'
+```
+
+Read all comments and review threads. Note:
+- **What other reviewers (including Bucky) have already flagged** — do not re-raise findings that are already called out and actively being addressed in the thread. If a finding is raised but the author has not yet responded or fixed it, you should still include it.
+- **Commitments the author made in comments** — e.g. "will fix in follow-up ticket", "this is intentional because X", "Leslie confirmed Y". These count as context for evaluating AC items.
+- **Resolved vs. unresolved threads** — a finding with an approved resolution is closed; one with no response is still open.
+- **What the PR description says vs. what commenters push back on** — discrepancies matter.
+
+Summarize the comment thread state briefly. You will use this in the AC coverage section of the review.
+
+### 1e. Fetch Jira ticket and extract AC (if PR number provided)
+
+Parse the Jira ticket key from the branch name (e.g. `DATA-17344` from branch `DATA-17344` or `DATA-17344-some-description`). If no key is parseable, skip this step.
+
+```python
+import os, dotenv, requests
+dotenv.load_dotenv(os.path.expanduser('~/.claude/scripts/integrations/.env'))
+url = os.environ['JIRA_SERVER']
+token = os.environ['JIRA_PAT']
+headers = {'Authorization': f'Bearer {token}', 'Content-Type': 'application/json'}
+r = requests.get(f'{url}/rest/api/2/issue/{ticket_key}', headers=headers)
+data = r.json()
+description = data['fields']['description']
+summary = data['fields']['summary']
+```
+
+From the ticket description, extract:
+1. **Problem Statement** — what problem or business need this ticket addresses. Usually under `h2. Problem Statement` or the opening paragraph.
+2. **Acceptance Criteria** — the explicit list of conditions the PR must satisfy to close the ticket. Usually under a heading like `h2. Acceptance Criteria` or `AC:`.
+3. **What Needs to Be Built** — requirements that should be reflected in the diff.
+4. **Dependencies** — any external sign-offs or coordination steps required (e.g. "validate with Finance", "coordinate with Leslie").
+
+Display a **Ticket Context** block immediately — before any diff analysis — so the intent is clear before reviewing code:
+
+```
+### Ticket Context: <TICKET-KEY> — <summary>
+
+**Problem:** <1–2 sentence problem statement from the ticket>
+**AC items found:** <count>
+```
+
+If the ticket has no structured description, write the raw summary as the problem statement and note that no structured AC was found.
+
+You will evaluate each AC item in Phase 4.
+
 ## Repo-Specific Standards
 
 ### sonos-data-cleansed-dbt
@@ -70,6 +125,7 @@ If the project path contains `sonos-data-cleansed-dbt`, apply AutomateDV guideli
 - **Ghost records**: Check whether ghost/default records are handled consistently with the rest of the project.
 
 Flag any deviation from these patterns as **HIGH** severity — AutomateDV macros are opinionated and incorrect usage silently produces wrong Data Vault output.
+
 
 ### sonos-data-core-dbt
 
@@ -103,6 +159,14 @@ Every dimension — whether sourced from the legacy warehouse or the new DV2.0 l
 - **Date column defaulting to something other than `'1900-01-01'`**: Using `null`, `current_date`, or another arbitrary date as the unknown member default for date columns in dimensions.
 - **Sentinel value misspelled**: `'*N/A'` spelled as `'N/A'`, `'* N/A'`, `'*n/a'`, `'Unknown'`, or `'(blank)'` — causes incorrect sorting and inconsistency in BI filter lists.
 - **Audit columns exposed in viz output**: Columns like `dw_created_by`, `dw_modified_by`, `dw_created_date`, `dw_modified_date` should not surface in viz models.
+
+#### Staging model conventions (sonos-data-core-dbt only)
+
+**Do NOT flag the following as findings for `models/staging/**` files:**
+- Missing `not_null`, `unique`, or `dbt_utils.unique_combination_of_columns` tests in staging `.yml` files — tests are not added to staging models by team convention
+- Missing column `description` entries in staging `.yml` files — column descriptions are not added to staging models by team convention
+
+These rules override the general dbt HIGH/MEDIUM severity checks above. Apply the full testing and documentation standard only to `models/warehouse/**` and `models/viz/**`.
 
 ## Phase 2: Infer the Coding Standards
 
@@ -185,6 +249,11 @@ When the diff contains `.sql` or `.yml` files in a `models/` directory, apply th
 - **Fan-out join without dedup**: A join where the right-side table can have multiple matching rows and there is no `GROUP BY`, `DISTINCT`, `QUALIFY ROW_NUMBER()`, or similar guard. Silently multiplies rows and inflates metrics.
 - **SCD treatment inconsistency** (Kimball models): A dimension column that should be historized (Type 2) being overwritten (Type 1), or vice versa — especially if neighboring columns in the same model handle it differently.
 
+- **Inline comments or ticket references in SQL files**: Descriptive prose or ticket refs (e.g. `-- DATA-12345 - this model does X`) embedded in `.sql` files should not exist. Documentation belongs in the corresponding `.yml` file, not inline in SQL.
+- **String normalization in intermediate instead of staging**: `TRIM()`, null coercion, and string cleanup on key/dimension columns belong in the staging model. If an intermediate applies `trim(col) != ''` on columns that staging passed through uncleaned, flag it.
+- **New intermediate or mart model missing a paired `.yml` file**: Every new model that is not a staging passthrough must have a corresponding `.yml` with at minimum a model description and primary key test.
+- **Mart/warehouse yml descriptions using inline prose instead of doc blocks**: If the project uses `'{{ doc("model_name") }}'` references in mart/warehouse ymls, flag any new model using a long inline description (`description: >`) instead. Documentation prose belongs in the doc block `.md` file.
+
 #### LOW severity:
 
 - **Grain not documented**: For new fact or mart models, the grain (what one row represents) should be stated in the model description or a comment at the top of the file. Without it, reviewers can't verify the logic is correct.
@@ -232,12 +301,34 @@ If there are no findings in a file, skip it.
 
 A brief paragraph (2–4 sentences) noting how the new code relates to the existing codebase style — what's consistent, what diverges, whether the diff fits in or feels foreign.
 
+### Ticket & AC Coverage
+
+*(Include this section only when a PR number was provided and a Jira ticket was found.)*
+
+**Ticket:** `<TICKET-KEY>` — <one-line summary>
+
+For each AC item extracted from the ticket, evaluate whether the PR satisfies it. Use the diff, PR description, and comment thread as evidence.
+
+| # | Acceptance Criterion | Status | Evidence / Notes |
+|---|---|---|---|
+| 1 | <ac item text, shortened> | ✅ Met / ⚠️ Partial / ❌ Not met | <what in the PR satisfies or fails this — cite specific file, comment, or PR description section> |
+| 2 | ... | ... | ... |
+
+Status rules:
+- **✅ Met** — satisfied by the diff or explicitly validated in the PR description / Jira comments
+- **⚠️ Partial** — partially addressed but something is missing or unverified (e.g. validation stopped at the wrong layer, stakeholder sign-off not documented)
+- **❌ Not met** — no evidence in the PR that this was done
+
+**PR comment thread summary:** 1–3 sentences on what reviewers have flagged, what's been resolved, and what's still open. If no comments exist, write "No review comments yet."
+
+If all AC items are ✅, note that the ticket requirements are fully satisfied. If any are ⚠️ or ❌, these should be reflected in the Overall Verdict (a ⚠️ partial AC item is at minimum a MEDIUM finding; an ❌ unmet AC item should block merge).
+
 ### Overall Verdict
 
 One of:
 - ✅ **Approved** — Looks good, ready to merge
 - ⚠️ **Approved with minor comments** — Mergeable but the findings are worth addressing
-- 🔄 **Changes requested** — At least one HIGH or CRITICAL finding that should be resolved before merging
+- 🔄 **Changes requested** — At least one HIGH or CRITICAL finding, or one ❌ unmet AC item, that should be resolved before merging
 
 ---
 
@@ -252,3 +343,34 @@ One of:
 **When uncertain, say so.** "This looks like it might cause a race condition if called concurrently, but I'd need to know more about how this is scheduled" is fine — better than either silence or false confidence.
 
 **Generated/vendored files**: Do not review `package-lock.json`, `yarn.lock`, `*.generated.*`, `dist/`, `vendor/`, or similar. Note in the summary if they appear in the diff but skip them in the findings.
+
+## Important output rules
+
+- **Do NOT include a "Files Changed" section** with raw diff blocks and "Your notes:" placeholders. The diff is already in the PR — reproducing it in the review draft adds length without value. Findings in Phase 4 are sufficient; link to the file/line by name if needed.
+
+## Phase 5: Save to Second Brain
+
+After writing the review, save it to `~/second-brain/code-reviews/pending/` using this filename format:
+
+```
+YYYY-MM-DD-PR<number>-<repo-name>.md
+```
+
+Where `YYYY-MM-DD` is today's date, `<number>` is the PR number, and `<repo-name>` is the short repo name (e.g. `sonos-data-core-dbt`).
+
+The file header must follow this structure exactly (before the review content):
+
+```markdown
+# Code Review Draft: PR #<N> — <TICKET-KEY> | <PR title>
+_Review and edit before posting to GitHub. Do NOT post automatically._
+
+**PR:** [<PR title>](<PR URL>)
+**Repo:** <org>/<repo> | **Author:** <author>
+**Branch:** `<branch>` → `<base>`
+**Drafted:** <today's date>
+**Ticket:** [[<TICKET-KEY>]]
+```
+
+- If the branch name is a Jira ticket key (e.g. `DATA-17232`), use that as `<TICKET-KEY>`.
+- If the author is Alejandra (`AlejandraValdezSonos`), use `[[development/<TICKET-KEY>/design-doc|<TICKET-KEY>]]` as the ticket link instead — it points to her own design doc.
+- For peer reviews, `[[<TICKET-KEY>]]` links to the ticket stub in `data-model-decisions/`.
