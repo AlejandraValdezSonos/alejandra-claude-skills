@@ -70,6 +70,35 @@ are stale even though the viz files aren't in the diff (PR 1535 round 2: both vi
 ymls). Sweep every viz/exposure model that selects from a changed model. Also re-check
 AGENTS.md domain overview paragraphs (he checks those — PR 1481).
 
+**self-invalidating tests (new, PR 1587)**
+- A migration/rebuild test that hardcodes a comparison against the live prod table
+  using columns the SAME PR renames or drops. Passes today (prod still has the old
+  names), then breaks the next unrelated PR that touches the model, once `state:
+  modified+` re-selects it — not a real regression, just a stale identifier. Ask:
+  "do the specific columns this test reads still exist under these names after this
+  PR ships?" If no, drop those assertions or diff against a frozen snapshot instead
+  of the live table. The established repo pattern (compare CI vs. live prod) is fine
+  in general — the problem is only when the comparison's own columns are the ones
+  being deleted.
+- Aggregate-only regression guards on a join that changed (e.g. `SUM(flag)` instead
+  of a per-key `IS DISTINCT FROM`) can pass even when a misjoin assigns the right
+  values to the wrong keys, as long as the totals coincidentally match.
+
+**sentinel/null-handling regressions (new, PR 1587)**
+- `nullif(col, '*N/A')` with no matching `coalesce(..., '*N/A')` afterward anywhere
+  downstream. This repo's established pattern is always two-sided:
+  `coalesce(nullif(trim(col), ''), '*N/A')` — normalize, then restore the sentinel
+  (see `fact_gl_journal_opex_agg.sql`, `viz_worker_headcount_agg.sql`). A one-sided
+  `nullif` strips the sentinel and lets bare `NULL` leak to BI/Tableau on a renamed
+  or refactored column, reversing the repo's varchar-attribute convention.
+
+**hardcoded description strings bypassing an existing doc block (sharper version of
+the DATA-17684 pattern)** — not just "should have used `{{ doc(...) }}`" but check
+whether a doc block with that exact column name already exists in ANY `_*_docs.md`
+in the repo (`grep -rn 'docs <name> %}' --include="*.md" models/`) before assuming
+one needs to be created. PR 1587 hardcoded a description for
+`product_registration_requirement_id` when `_bizops_docs.md` already had one.
+
 **repo-convention**
 - New standalone tests/ files outside established domains get flagged against the
   repo guidance (1481 — before tests/finance/ was established); know the current
