@@ -241,6 +241,42 @@ Common things to check:
   instead of manual UNION ALL for unknown rows?
 - Are there existing `get_columns` or column-generation macros being bypassed?
 
+### 4b-2. Upstream-duplication check — does the source already compute this?
+
+4a/4b only look for logic duplicated *within this repo*. Separately check whether a
+changed model **re-derives something its own `source()` already provides** — recomputing
+a hash/key/flag that the cleansed-dbt vault layer already exposes on the same row.
+
+For each new or changed derived column (surrogate keys via `create_binary_key`/
+`dbt_utils.generate_surrogate_key`, boolean flags via `coalesce(x, 0) > 0`-style
+recomputation, concatenation-based dedup keys), check the actual source columns before
+accepting the independent derivation:
+
+```bash
+# List every column the source view/table actually exposes — don't rely on the
+# source() yml, which usually doesn't list every column
+dbt show --inline "select * from <database>.<schema>.<source_table> limit 0" 2>&1 | grep -i "column\|field"
+# or, if credentials allow:
+dbt show --inline "describe table <database>.<schema>.<source_table>"
+```
+
+If the source already has an equivalent pre-computed column (commonly named `*_hk`,
+`*_key`, `*_id`, or matching the derived column's own name), the independent derivation
+is a finding even if the values match today — flag it as a maintenance/drift risk: the
+model won't track upstream changes to that derivation, and it duplicates logic that
+belongs to the layer that owns it (usually the vault/business-vault layer upstream).
+**Do not let "the values match" close this out** — matching values only proves the
+value is right *today*; it says nothing about which layer should own the computation.
+
+Caught in the wild (2026-09-29, DATA-17654): `dim_product_sku_hierarchy` recomputed
+`product_sku_key` via `create_binary_key(['trim(sku)'])` from `v_product_sku.sku`, even
+though `v_product_sku` already exposes `product_sku_hk` — byte-identical, same
+`generate_surrogate_key(trim(sku))` formula, computed by the vault layer. The ticket
+named `product_sku_hk` as the intended source. A prior research pass had already
+verified "values are identical between old and new key derivation" and treated that as
+closing the question — it wasn't; it only proved the value, not the ownership. Caught by
+a human reviewer (Varun), not by this check, which is why this section exists.
+
 ### 4c. Optimization check
 
 For each changed model:
@@ -408,7 +444,7 @@ these are the findings Bucky would otherwise deliver over multiple batched runs>
 
 ### DRY Analysis
 
-<findings from Phase 4a and 4b>
+<findings from Phase 4a, 4b, and 4b-2>
 
 ✅ No repeated patterns found.
 OR
