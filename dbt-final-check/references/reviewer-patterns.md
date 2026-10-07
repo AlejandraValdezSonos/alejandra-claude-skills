@@ -132,3 +132,43 @@ one needs to be created. PR 1587 hardcoded a description for
 - **What earns fast approval**: validation queries + attached HTML guide she can run
   herself (1500: "thanks for the validation queries and the attached html. i ran some
   queries and it makes sense").
+
+## Self-check find-classes (mined from PR 1635, DATA-17865, 2026-10-06)
+
+Found by this skill / `/validate-pr` rather than by a human reviewer — fold back so they
+run mechanically next time.
+
+**wrong-column anchor in a validation test** — a hardcoded test constant whose before/after
+pair matches a **sibling column's** measured values, not the column the test queries.
+PR 1635: `validate_dim_geochannel_legacy_fpa_codes` asserted reseller non-null ≈ 81,775 with
+a comment reading "79,932 before, 81,775 after" — both are the *distributor* column's figures
+(reseller is 78,608 → 80,451). It passed on 311 rows of headroom inside a ±2% band. Check
+anchor provenance against the column actually in the `WHERE`, and check the *pair*: one
+number matching a sibling can be coincidence, both matching is a column mix-up. Trace the
+constant upstream too — it came from the ticket's Expected Results table, so fixing only the
+test lets the next orchestrator pass regenerate it.
+
+**no execution path for a new singular test** — for every new test, name the selector that
+runs it *after merge*. `ci_data_dependent` alone runs **nowhere**: PR CI excludes that tag
+(`pull-request.yml`), and the prod DAG selects `tag:prod_tests`. The 14 existing
+`ci_data_dependent` tests all also carry `membership`, which the membership DAG selects via
+`+tag:membership` — that is what gives them a home. A test with no selector is a one-shot
+QA-gate artifact wearing a regression guard's comment.
+
+**drift-sensitive tests must never recur** — a 0%-tolerance comparison against *live* prod is
+valid only where build and comparison happen minutes apart (the QA gate's fresh scoped
+clone). Never add `prod_tests` to one. Evidence: PR 1635's regression test passed the evening
+of 5 Oct and returned 4 differences the next afternoon with no code change and no rebuild —
+`*N/A` −421, UK Amazon +494, MEA Subregion +67, row count +177 — purely from the overnight
+production refresh reattributing dealer FP&A codes. The sibling DATA-17768 test fails the
+same way. Banded tests (±2%) are fine to recur; exact-match-vs-live-prod ones are not.
+
+**banded counts cannot guard sentinels; and prove new tests aren't vacuous** — two parts:
+1. A sentinel/leak invariant needs an **exact-zero** check, never a band. PR 1635: dropping
+   `where dimdealerfpahierarchykey != -1` would have leaked the literal `'-1'` on just **2**
+   rows against 2,960 rows of band headroom — invisible by ~1,500×.
+2. After writing or rewriting a test, **prove it bites**: show the population it actually
+   covers is non-empty and matches the expected figure. PR 1635's rewrite was verified as
+   1,845 legacy dealers matched / 1,843 with a valid key (= the +1,843 delta the fix
+   delivers) / 2 carrying the sentinel / 0 offenders. A test whose join matches nothing
+   passes just as green as a correct one.

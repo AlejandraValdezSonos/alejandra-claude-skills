@@ -34,19 +34,42 @@ change" rather than "consider changing this."
 
 ## Phase 0: Full-diff inventory (the anti-batching contract)
 
-Before any checking, enumerate the complete review surface and hold yourself to it:
+Before any checking, enumerate the complete review surface and hold yourself to it.
+
+**Resolve the real base first — do not assume `test`.** A stacked PR based on another
+ticket's branch will otherwise have its base's changes attributed to it, and the merge
+check below never runs:
 
 ```bash
-git fetch origin test
-git diff origin/test...HEAD --stat            # every file, committed
+BASE=$(gh pr view <pr> --json baseRefName --jq .baseRefName)   # may NOT be "test"
+git fetch origin "$BASE"
+git diff "origin/$BASE"...HEAD --stat         # every file, committed
 git diff --stat                               # plus uncommitted work
 ```
 
+**If `$BASE` is not `test`, the PR is stacked.** Dry-run the merge and treat a conflict as
+a **blocking** finding — report which side owns each conflicting hunk, because the naive
+resolution can silently revert the base branch's work:
+
+```bash
+git merge-tree --write-tree --name-only "origin/$BASE" HEAD
+```
+
+**Inventory files with `git diff --name-only` or `gh pr view --json files` — never
+`gh pr diff`.** The latter is a two-dot diff and hides files the branch shares with its
+base (observed: showed 6 of 8 files, and the 2 it hid contained the only blocking finding).
+
 Build a **coverage checklist**: one row per changed file. The run is not complete until
-every row has been examined under every applicable lens (Phase 4.5) plus the existing
-phases. If the diff is large, work through ALL of it in this run — spawn subagents per
-file group if needed — never truncate to "the most important files." The final output
-must include the coverage matrix so it's provable nothing was skipped.
+every row has been examined under every applicable lens (Phase 4.5) **and** Phase 2
+(style) **and** Phase 3 (methodology). If the diff is large, work through ALL of it in this
+run — spawn subagents per file group if needed — never truncate to "the most important
+files." The final output must include the coverage matrix so it's provable nothing was
+skipped.
+
+**Never defer a phase, only report it N/A with the reason.** Deferring a *file* is already
+forbidden; the same applies to a *phase*. Phases 2 and 3 are the ones most easily lost to
+momentum from the lens sweep — the matrix below has columns for them precisely so a skip
+shows up as a blank rather than passing unnoticed.
 
 ## Phase 1: Identify changed models
 
@@ -405,7 +428,19 @@ Record per-lens results into the Phase 0 coverage matrix (✅ clean / finding re
 
 ## Phase 5: Output
 
-Print results to terminal in this format:
+**Two destinations, different lengths.**
+
+The **full report** (every section below) is appended to the PR's review file at
+`~/second-brain/code-reviews/PR<n>-<repo>-<YYYY-MM-DD>.md`, creating it if absent. That is
+where depth belongs.
+
+**The terminal gets the short version only:** the verdict, then one line per blocking/HIGH
+finding, then the path to the full report. Do not dump the matrix, the style tables, or the
+clean-lens list to the terminal — Alejandra reads these mid-task and has repeatedly asked
+for less (see `feedback_lead_with_short_answer`). Mention LOW/MEDIUM findings by count, not
+individually, unless she asks.
+
+Full report format:
 
 ```markdown
 ## dbt Final Check — `<branch_name>`
@@ -414,12 +449,15 @@ Print results to terminal in this format:
 
 ---
 
-### Coverage matrix (Phase 0 × Phase 4.5 — proves full-PR coverage)
+### Coverage matrix (Phase 0 × Phases 2, 3 and 4.5 — proves full-PR coverage)
 
-| File | intent | correctness | testing | docs-drift | compat-api | performance | security | modeling-judgment |
-|---|---|---|---|---|---|---|---|
-| model_a.sql | ✅ | F1 | ✅ | F3 | ✅ | ✅ | ✅ |
-<every changed file gets a row; findings referenced by number; no blanks allowed>
+| File | style | methodology | intent | correctness | testing | docs-drift | compat-api | performance | security | modeling-judgment |
+|---|---|---|---|---|---|---|---|---|---|---|
+| model_a.sql | ✅ | ✅ | ✅ | F1 | ✅ | F3 | ✅ | ✅ | ✅ | ✅ |
+<every changed file gets a row; findings referenced by number; no blanks allowed —
+an unexamined cell is a blank, and a blank means the run is not finished. `style` is
+Phase 2, `methodology` is Phase 3; mark N/A with a reason (e.g. a .md or workflow file
+has no methodology axis) rather than leaving either empty>
 
 ### Bucky Lens Findings
 
@@ -480,13 +518,20 @@ OR
 ❌ **Not ready** — N blocking issues must be fixed before opening a PR
 
 Blocking issues are: methodology violations, missing PK tests on warehouse/viz models,
-contract violations (missing data_type), and CRITICAL optimization problems (cartesian joins,
-broken incremental filters).
+contract violations (missing data_type), CRITICAL optimization problems (cartesian joins,
+broken incremental filters), and a stacked PR that conflicts with its own base (Phase 0).
 ```
 
 ## Important notes
 
 - This is a self-check, not a peer review. Be direct: "fix this" not "consider this."
+- **Fix LOW findings, don't defer them — when the fix is cheap, deterministic, AND inside
+  the branch's existing scope.** All three conditions. A LOW whose fix touches a file this
+  PR never changed stays a note (that would violate the repo's don't-touch-unrelated-files
+  constraint). Worked example from PR 1635: switching this PR's 7 new column descriptions
+  to `doc()` blocks was in-scope → fix it; enriching `_dealer_docs.md`'s pre-existing
+  one-line blocks was not → note it. Rating something LOW is not permission to skip it
+  silently; if you defer an in-scope LOW, say why.
 - Only flag real issues — don't pad the output with passing checks.
 - If a model is in staging, don't flag it for missing warehouse-level docs/tests.
 - If a pattern is used everywhere in the repo (even if suboptimal), don't flag it in the
