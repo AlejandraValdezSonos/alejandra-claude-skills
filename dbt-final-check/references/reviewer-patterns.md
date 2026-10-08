@@ -172,3 +172,16 @@ same way. Banded tests (±2%) are fine to recur; exact-match-vs-live-prod ones a
    1,845 legacy dealers matched / 1,843 with a valid key (= the +1,843 delta the fix
    delivers) / 2 carrying the sentinel / 0 offenders. A test whose join matches nothing
    passes just as green as a correct one.
+
+**a "duplicated key" may be a sentinel shared by many distinct records (new, PR 1637)** —
+when a uniqueness check reports N rows sharing one key value, look at the rows before
+describing the count. PR 1637: `viz_geochannel` showed "one duplicated `store_dealer_id`,
+39 rows." That value was the literal `'*N/A'` sentinel, and the 39 rows were 39 *different*
+records (AMERICAS, APAC, JAPAN, TAIWAN, EAST EUROPE…) with 39 distinct
+`geochannel_dealer_key`s, all carrying the no-PRM-account sentinel. No record appeared
+twice. Reported twice as "one store appearing 39 times" before anyone looked at the rows.
+Two consequences worth checking in the same pass: (a) a `partition by <key>` dedup over
+such a column collapses unrelated records, not duplicates of one; (b) ask whether anything
+actually joins to the sentinel — here zero dealers had `prmaccountid = '*N/A'`, so all 39
+rows were unreachable and the dedup was inert. `count(*) > 1` tells you a value repeats, not
+that an entity does.
