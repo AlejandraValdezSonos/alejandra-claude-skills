@@ -1,0 +1,85 @@
+# A small, fictional example. Copy it, then replace every value with your ticket's facts.
+ticket: DATA-00000
+title: Add a region column to the sales summary view
+pr: "#123"
+author: Your Name
+as_of: 2026-01-15
+scope: "Sales summary, FY26 Q1"
+ticket_file: null
+draft: true
+provenance:
+  - {label: "Finance Validation", text: "The changed view's SQL compiled and run over production tables on 2026-01-15."}
+  - {label: "Technical Validation", text: "Tests run in a personal dev build, which can lag production."}
+cards:
+  - {num: "1,204,311", label: "units in FY26 Q1, unchanged by the new column", claim: c-total}
+requirements:
+  sections:
+    - title: "The problem"
+      html: "<p>Analysts cannot slice sales by region because the view has no region column.</p>"
+claims:
+  - id: c-total
+    text: "FY26 Q1 total units are 1,204,311 and equal production."
+    status: VERIFIED
+    audience: finance
+    evidence: "Total-units query on the production table"
+    source_query: queries/total_units.sql
+    measured_at: 2026-01-15
+    footing: prod
+  - id: c-identical
+    text: "All existing columns are identical to production across every row."
+    status: VERIFIED
+    audience: engineering
+    evidence: "Hash over every pre-existing column, changed view against production"
+    source_query: queries/existing_columns_hash.sql
+    measured_at: 2026-01-15
+    footing: compiled_pr_over_prod
+  - id: c-owner-note
+    text: "The Finance lead asked for region to follow the sales-territory table, not the billing address."
+    status: VERIFIED
+    audience: both
+    evidence: "Message in the project channel"
+    source: slack_message
+    source_ref: "Project channel, 2026-01-12"
+    observed_at: 2026-01-12
+    footing: n/a
+  - id: c-territory
+    text: "The sales-territory table is the agreed source for region."
+    status: UNKNOWN
+    audience: finance
+    check: "Ask the Finance lead to confirm in writing that the territory table is the source of truth."
+acceptance_criteria:
+  - id: 1
+    text: "Every existing column has an identical value for every row after the change."
+    result_html: "A hash over all existing columns is identical to production."
+    claims: [c-identical]
+finance_validation:
+  intro_html: "<p>Please confirm the totals look right.</p>"
+  blocks:
+    - title: "Q1: Totals are unchanged"
+      measured_at: 2026-01-15
+      query_file: queries/total_units.sql
+      claims: [c-total]
+      table:
+        columns: [Measure, Value]
+        rows: [["FY26 Q1 total units", "1,204,311"]]
+        row_status: [VERIFIED]
+technical_validation:
+  intro_html: "<p>Checks that the build is sound.</p>"
+  blocks:
+    - title: "T1: Existing columns unchanged"
+      measured_at: 2026-01-15
+      query_file: queries/existing_columns_hash.sql
+      claims: [c-identical]
+      table:
+        columns: [Check, Result]
+        rows: [["Hash of existing columns", "Equal to production"]]
+        row_status: [VERIFIED]
+context:
+  - id: 1
+    fact: "Region follows the sales-territory table, not the billing address."
+    why: "A different source would change which region owns each sale."
+    claim: c-territory
+    who: ["Finance lead"]
+    question: "Is the sales-territory table the source of truth for region?"
+    signed_off_by: null
+    signed_off_date: null
