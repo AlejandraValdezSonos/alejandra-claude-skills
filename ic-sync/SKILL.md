@@ -115,3 +115,11 @@ The review app groups files by fiscal quarter (October start): weekly files by `
   as a draft. Do not claim creativity, independence or mentoring the entries do not show; say "unknown" instead.
 - The Sonos Job Leveling Guidelines say they are not a checklist, promotion scorecard or a way to compare people. Keep this a development aid:
   no "meets IC3" verdicts, no scores.
+
+## Automation: the Friday job does the weekly part
+`~/.claude/scripts/ic_progress/weekly_job.py` runs from launchd on Fridays at 3 PM (`com.alejandra.secondbrain.icweekly`; log
+`~/.claude/logs/ic-weekly.log`). It runs gather and propose, saves high-confidence facts as confirmed (`auto: true`), queues the rest as
+`proposed` in `~/second-brain/ic-progress/<week>.md`, and proposes target-level stretch flags with one API call. Alejandra confirms the queue in the
+app's Review tab. So the weekly manual run of this skill is no longer required. Use `/ic-sync` for: quarter mode (the rollup and the gap
+file), a manual catch-up, or re-tagging. When you do run it, do not change entries that are already `confirmed` or `skipped` and keep ids
+stable so the job's merge stays idempotent.
