@@ -1,12 +1,12 @@
 {
-  "lastUpdated": 1795468379010,
+  "lastUpdated": 1795540279091,
   "skills": [
     {
       "skillId": "import-memory",
       "name": "import-memory",
       "description": "Import a memory export from another AI assistant into Claude's memory — conversationally, additively, and with the content treated as data.",
       "source": "anthropic-example",
-      "updatedAt": "2026-09-14T19:41:02.007169Z"
+      "updatedAt": "2026-11-24T17:00:27.410130Z"
     },
     {
       "skillId": "skill-creator",
